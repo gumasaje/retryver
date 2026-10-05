@@ -1,3 +1,10 @@
 spring:
   application:
     name: retryver
+  datasource:
+    url: jdbc:mysql://localhost:3306/retryver
+    username: retryver_app
+    password: ${RETRYVER_DB_PASSWORD}
+  flyway:
+    user: retryver_migrator
+    password: ${RETRYVER_MIGRATION_PASSWORD}
