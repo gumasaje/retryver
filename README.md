@@ -6,7 +6,7 @@ Retryver는 외부 시스템으로 HTTP 이벤트를 전달하는 작업을 관�
 
 이 관찰을 바탕으로, 응답을 확인하지 못한 전달 작업과 재전송에 따른 중복 처리 문제를 다룰 방법을 설계하고 구현·검증하는 것이 목표다. 전달을 실행하는 프로세스가 중단됐을 때 남은 작업을 어떻게 유지하고 복구할지도 다룬다.
 
-현재는 Spring JDBC로 Event와 연결된 Delivery를 MySQL에 함께 기록하는 저장 서비스를 구현했다. 정상 호출 이후 두 기록이 남고, Delivery 저장이 실패하면 Event 기록도 취소되는 것을 테스트로 확인했다.
+현재는 HTTP 접수 API를 Spring JDBC 저장 서비스와 연결했다. Event와 연결된 Delivery를 MySQL에 함께 저장한 뒤 `202 Accepted`와 `PENDING` 상태로 응답한다. 정상 접수와 입력 거부, Delivery 저장 실패 시 전체 롤백을 검증했다.
 
 ## 문서
 
@@ -54,7 +54,7 @@ ON retryver.* TO 'retryver_migrator'@'localhost';
 JAVA_HOME="$(/usr/libexec/java_home -v 21)" ./gradlew build
 ```
 
-`build`는 컴파일, 테스트, 패키징을 실행한다. 통합 테스트는 로컬 MySQL을 사용하며 Event와 Delivery의 저장 및 트랜잭션 롤백을 검증한다.
+`build`는 컴파일, 테스트, 패키징을 실행한다. 통합 테스트는 로컬 MySQL을 사용하며 접수 응답과 입력 검증, Event와 Delivery의 저장 및 트랜잭션 롤백을 검증한다.
 
 서버를 시작하고 `Started RetryverApplication` 로그를 확인한다.
 
@@ -62,10 +62,21 @@ JAVA_HOME="$(/usr/libexec/java_home -v 21)" ./gradlew build
 JAVA_HOME="$(/usr/libexec/java_home -v 21)" ./gradlew bootRun
 ```
 
-실행 중인 서버를 별도 터미널에서 확인한다.
+실행 중인 서버에 별도 터미널에서 이벤트를 접수한다.
 
 ```bash
-curl -i http://localhost:8080/
+curl -i -X POST http://localhost:8080/events \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "eventId": "example-event-1",
+    "eventCategory": "주문 생성",
+    "payload": {"orderId": 42},
+    "receiverUrl": "http://localhost:9090/events"
+  }'
 ```
 
-현재 `/` API가 없으므로 404 응답이 예상된다. 이 확인은 서버 기동과 HTTP 응답 확인이며 이벤트 전달 기능 테스트는 아니다. 서버 종료는 실행 터미널에서 `Ctrl+C`로 한다.
+정상 접수에서는 `202 Accepted`와 함께 `eventId`, 서버가 생성한 `deliveryId`, `deliveryStatus: "PENDING"`을 담은 JSON을 반환한다. 이는 Retryver가 전달 작업을 접수했다는 의미이며, Receiver의 업무 처리 완료와는 구분한다.
+
+필수 문자열의 null·빈 값·공백만 있는 값, payload 생략과 JSON null은 `400 Bad Request`로 거부한다. 예제를 다시 실행할 때는 새로운 `eventId`를 사용한다. 현재 같은 이벤트 ID의 재접수는 DB 기본 키 제약에 의해 저장에 실패한다.
+
+서버 종료는 실행 터미널에서 `Ctrl+C`로 한다.
