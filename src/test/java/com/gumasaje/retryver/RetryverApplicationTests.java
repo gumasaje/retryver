@@ -34,6 +34,9 @@ class RetryverApplicationTests {
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired
+    private PendingDeliveryReader pendingDeliveryReader;
+
     @Test
     void connectsToRetryverDatabase() {
         String database = jdbcClient.sql("SELECT DATABASE()")
@@ -130,6 +133,10 @@ class RetryverApplicationTests {
                 EventIntakeResponse.class
         );
 
+        var delivery = pendingDeliveryReader
+                .findByDeliveryId(response.deliveryId())
+                .orElseThrow();
+
 
         int eventCount = jdbcClient.sql("SELECT COUNT(*) FROM events WHERE event_id = :eventId")
                 .param("eventId", eventId)
@@ -148,6 +155,13 @@ class RetryverApplicationTests {
         assertEquals("PENDING", response.deliveryStatus());
         assertEquals(1, eventCount);
         assertEquals(1, pendingDeliveryCount);
+
+        assertEquals(eventId, delivery.eventId());
+        assertEquals(response.deliveryId(), delivery.deliveryId());
+        assertEquals("http://localhost:9090/events", delivery.receiverUrl());
+        assertEquals(jsonMapper.readTree(requestBody).get("payload"),
+                jsonMapper.readTree(delivery.payload()));
+        assertEquals("PENDING", delivery.deliveryStatus());
     }
 
     @ParameterizedTest
@@ -193,5 +207,13 @@ class RetryverApplicationTests {
 
         assertEquals(0, eventCount);
         assertEquals(0, deliveryCount);
+    }
+
+    @Test
+    void returnsEmptyWhenDeliveryDoesNotExist() {
+        String missingDeliveryId = "missing--" + UUID.randomUUID();
+        var result = pendingDeliveryReader.findByDeliveryId(missingDeliveryId);
+
+        assertTrue(result.isEmpty());
     }
 }
