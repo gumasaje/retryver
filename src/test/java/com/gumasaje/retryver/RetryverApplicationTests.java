@@ -1,5 +1,6 @@
 package com.gumasaje.retryver;
 
+import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -13,7 +14,10 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -36,6 +40,14 @@ class RetryverApplicationTests {
 
     @Autowired
     private PendingDeliveryReader pendingDeliveryReader;
+
+    @Autowired
+    private DeliveryExecutor deliveryExecutor;
+
+    private record ReceivedRequest(
+            String method, String eventId, String contentType, String body
+    ) {
+    }
 
     @Test
     void connectsToRetryverDatabase() {
@@ -215,5 +227,86 @@ class RetryverApplicationTests {
         var result = pendingDeliveryReader.findByDeliveryId(missingDeliveryId);
 
         assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void sendStoredPendingDeliveryToReceiver() throws Exception {
+        var received = new AtomicReference<ReceivedRequest>();
+
+        var receiver = HttpServer.create(
+                new InetSocketAddress("127.0.0.1", 0), 0
+        );
+
+        receiver.createContext("/callback", exchange -> {
+            try (exchange) {
+                received.set(new ReceivedRequest(
+                        exchange.getRequestMethod(),
+                        exchange.getRequestHeaders().getFirst("X-Event-Id"),
+                        exchange.getRequestHeaders().getFirst("Content-Type"),
+                        new String(
+                                exchange.getRequestBody().readAllBytes(),
+                                StandardCharsets.UTF_8
+                        )
+                ));
+                exchange.sendResponseHeaders(204, -1);
+            }
+        });
+
+        receiver.start();
+
+        try {
+            String receiverUrl = "http://127.0.0.1:"
+                    + receiver.getAddress().getPort() + "/callback";
+
+            String eventId = "test-invalid-" + UUID.randomUUID();
+
+            String requestBody = """
+                        {
+                          "eventId": "%s",
+                          "eventCategory": "주문 생성",
+                          "payload": {"orderId": 1010, "note": "전달 확인"},
+                          "receiverUrl": "%s"
+                          }
+                    """.formatted(eventId, receiverUrl);
+
+            var result = mockMvc.perform(
+                            post("/events")
+                                    .contentType(MediaType.APPLICATION_JSON)
+                                    .content(requestBody)
+                    )
+                    .andExpect(status().isAccepted())
+                    .andReturn();
+
+            var response = jsonMapper.readValue(
+                    result.getResponse().getContentAsString(),
+                    EventIntakeResponse.class
+            );
+
+            var observedStatus = deliveryExecutor.execute(response.deliveryId()).orElseThrow();
+
+            assertEquals(204, observedStatus);
+
+            var delivery = pendingDeliveryReader
+                    .findByDeliveryId(response.deliveryId())
+                    .orElseThrow();
+
+            var actual = received.get();
+
+            assertNotNull(actual);
+
+            assertEquals("POST", actual.method());
+            assertEquals(delivery.eventId(), actual.eventId());
+            assertEquals("application/json", actual.contentType());
+            assertEquals(
+                    jsonMapper.readTree(delivery.payload()),
+                    jsonMapper.readTree(actual.body())
+            );
+
+            assertEquals("PENDING", delivery.deliveryStatus());
+
+        } finally {
+            receiver.stop(0);
+        }
+
     }
 }

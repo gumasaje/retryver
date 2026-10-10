@@ -8,6 +8,10 @@ Retryver는 외부 시스템으로 HTTP 이벤트를 전달하는 작업을 관�
 
 현재는 HTTP 접수 API를 Spring JDBC 저장 서비스와 연결했다. Event와 연결된 Delivery를 MySQL에 함께 저장한 뒤 `202 Accepted`와 `PENDING` 상태로 응답한다. 정상 접수와 입력 거부, Delivery 저장 실패 시 전체 롤백을 검증했다.
 
+저장된 `PENDING` Delivery를 ID로 조회해 Receiver에 HTTP POST를 보내는 기능도 구현했다. 저장된 Receiver URL과 JSON payload를 사용하고, `X-Event-Id` 헤더로 이벤트 ID를 전달한다. 접수 응답을 받은 뒤 별도로 전달을 실행해 테스트용 Receiver의 `204` 응답과 수신한 내용을 확인했다.
+
+접수와 전달은 별도로 실행한다. 전달 실행은 응답 상태 코드를 반환하며, 전송 후에도 DB의 Delivery는 `PENDING`으로 남는다. 같은 ID로 다시 실행하면 다시 전송된다.
+
 ## 문서
 
 - [초기 요구사항과 사전 실험 근거](docs/requirements/initial-requirements.md)
@@ -54,7 +58,7 @@ ON retryver.* TO 'retryver_migrator'@'localhost';
 JAVA_HOME="$(/usr/libexec/java_home -v 21)" ./gradlew build
 ```
 
-`build`는 컴파일, 테스트, 패키징을 실행한다. 통합 테스트는 로컬 MySQL을 사용하며 접수 응답과 입력 검증, Event와 Delivery의 저장 및 트랜잭션 롤백을 검증한다.
+`build`는 컴파일, 테스트, 패키징을 실행한다. 통합 테스트는 로컬 MySQL을 사용하며 접수 응답과 입력 검증, Event와 Delivery의 저장 및 트랜잭션 롤백을 검증한다. 전달 테스트에서는 loopback HTTP 서버를 띄워 실제 POST 요청을 받고, 응답 상태 코드와 수신한 이벤트 ID, Content-Type, JSON payload를 확인한다.
 
 서버를 시작하고 `Started RetryverApplication` 로그를 확인한다.
 
